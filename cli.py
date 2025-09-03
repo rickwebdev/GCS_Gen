@@ -68,10 +68,14 @@ def find(categories, regions, max_leads, output, save_rejected, seo_mode, areas,
         click.echo(f"Target leads: {max_leads}")
     
     async def run_finder():
-        # Set API credentials
-        import os
-        os.environ['GOOGLE_API_KEY'] = 'AIzaSyAAfzJ-EG_oBko7GAV42Nq94iC4R_TB4h0'
-        os.environ['GOOGLE_CSE_ID'] = 'e7ea897cbf2c64b6d'
+        # API credentials should be set via environment variables or .env file
+        # Check if credentials are available
+        if not os.environ.get('GOOGLE_API_KEY') or not os.environ.get('GOOGLE_CSE_ID'):
+            click.echo("❌ Error: GOOGLE_API_KEY and GOOGLE_CSE_ID must be set in environment variables or .env file")
+            click.echo("💡 Create a .env file with your credentials:")
+            click.echo("   GOOGLE_API_KEY=your_api_key_here")
+            click.echo("   GOOGLE_CSE_ID=your_cse_id_here")
+            raise click.Abort()
         
         finder = LeadFinder()
         
