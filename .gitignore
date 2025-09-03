@@ -44,6 +44,10 @@ wheels/
 *.egg
 MANIFEST
 
+# ===== ALLOWED PYTHON FILES =====
+!requirements.txt
+!setup.py
+
 # ===== VIRTUAL ENVIRONMENTS =====
 lead_finder_env/
 venv/
