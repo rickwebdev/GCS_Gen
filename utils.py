@@ -199,11 +199,51 @@ def calculate_score(lead_data: dict) -> Tuple[int, str]:
     if lead_data.get('contact', {}).get('phone') or lead_data.get('contact', {}).get('form'):
         score += 5
     
-    # Hacked / compromised
+    # Hacked / compromised - CONFIDENCE-BASED SPAM DETECTION
     if lead_data.get('hacked_signals'):
-        score += 30
-        if len(lead_data['hacked_signals']) >= 2:
-            score += 10
+        # Calculate spam confidence
+        from crawler import WebCrawler
+        crawler = WebCrawler()
+        spam_analysis = crawler.calculate_spam_confidence(lead_data['hacked_signals'])
+        
+        # Check if this is a legitimate business
+        is_legitimate_business = False
+        if lead_data.get('brand_name'):
+            brand_lower = lead_data['brand_name'].lower()
+            business_terms = ['dermatology', 'medspa', 'salon', 'dental', 'law', 'spa', 'wellness', 'fitness', 'medical']
+            if any(term in brand_lower for term in business_terms):
+                is_legitimate_business = True
+        
+        # Apply confidence-based penalties
+        avg_confidence = spam_analysis['avg_confidence']
+        
+        if avg_confidence >= 90:  # Increased from 80
+            # High confidence spam - reject regardless of business type
+            score += 50  # Heavy penalty
+            if is_legitimate_business:
+                score += 10  # Extra penalty for business sites with high-confidence spam
+        elif avg_confidence >= 40:  # Reduced from 50
+            # Medium confidence - review bucket
+            if is_legitimate_business:
+                score += 15  # Reduced penalty for legitimate businesses
+            else:
+                score += 25  # Medium penalty for non-business sites
+        elif avg_confidence >= 15:  # Reduced from 20
+            # Low confidence - likely false positive
+            if is_legitimate_business:
+                score += 5   # Very light penalty
+            else:
+                score += 10  # Light penalty
+        else:
+            # No spam detected
+            score += 0
+        
+        # Regular signals (non-spam)
+        other_signals = [s for s in lead_data['hacked_signals'] if 'Spam content' not in s]
+        if other_signals:
+            score += 20
+            if len(other_signals) >= 2:
+                score += 10
     
     # Outdated / tech debt
     wp_version = lead_data.get('tech', {}).get('wp_version')

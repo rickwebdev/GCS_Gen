@@ -6,7 +6,8 @@ import os
 import time
 import json
 import requests
-from typing import Optional, Dict, Any
+import random
+from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 import config
 from models import PSIResults
@@ -16,25 +17,108 @@ from utils import rate_limit_delay
 class PageSpeedInsights:
     """Client for Google PageSpeed Insights API."""
     
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_keys: List[str] = None):
         """
         Initialize the PageSpeed Insights client.
         
         Args:
-            api_key: Google API key (optional, can use env var)
+            api_keys: List of Google API keys (optional, can use env var)
         """
-        self.api_key = api_key or os.getenv('GOOGLE_API_KEY')
-        if not self.api_key:
-            raise ValueError("Google API key is required for PageSpeed Insights")
+        if api_keys:
+            self.api_keys = api_keys
+        else:
+            # Support multiple API keys from environment
+            api_key = os.getenv('GOOGLE_API_KEY')
+            if api_key:
+                self.api_keys = [api_key]
+            else:
+                # Try to get multiple keys from environment
+                self.api_keys = []
+                for i in range(1, 6):  # Support up to 5 API keys
+                    key = os.getenv(f'GOOGLE_API_KEY_{i}')
+                    if key:
+                        self.api_keys.append(key)
+                
+                if not self.api_keys:
+                    raise ValueError("At least one Google API key is required for PageSpeed Insights")
         
+        self.current_key_index = 0
         self.base_url = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
         self.cache = {}  # Simple in-memory cache
         self.cache_ttl = 24 * 60 * 60  # 24 hours in seconds
+        
+        # Retry configuration
+        self.max_retries = 3
+        self.base_delay = 2.0  # Base delay in seconds
+        self.max_delay = 60.0  # Maximum delay in seconds
+        
+        # API quota tracking
+        self.quota_errors = 0
+        self.last_quota_reset = time.time()
+    
+    def _get_next_api_key(self) -> str:
+        """Get the next API key in rotation."""
+        key = self.api_keys[self.current_key_index]
+        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+        return key
+    
+    def _should_retry(self, error: Exception, attempt: int) -> bool:
+        """Determine if a request should be retried."""
+        if attempt >= self.max_retries:
+            return False
+        
+        # Retry on network errors and server errors
+        if isinstance(error, requests.exceptions.RequestException):
+            return True
+        
+        # Retry on HTTP 5xx errors
+        if hasattr(error, 'response') and error.response:
+            if error.response.status_code >= 500:
+                return True
+            # Retry on rate limiting (429) and some 4xx errors
+            if error.response.status_code in [429, 408, 413]:
+                return True
+        
+        return False
+    
+    def _calculate_delay(self, attempt: int, error: Exception = None) -> float:
+        """Calculate delay for exponential backoff with jitter."""
+        # Exponential backoff
+        delay = min(self.base_delay * (2 ** attempt), self.max_delay)
+        
+        # Add jitter to prevent thundering herd
+        jitter = random.uniform(0, 0.1 * delay)
+        delay += jitter
+        
+        # Special handling for rate limiting
+        if hasattr(error, 'response') and error.response and error.response.status_code == 429:
+            # Wait longer for rate limiting
+            delay = max(delay, 30.0)
+        
+        return delay
+    
+    def _handle_quota_error(self, error: Exception):
+        """Handle API quota errors."""
+        self.quota_errors += 1
+        current_time = time.time()
+        
+        # If we've hit multiple quota errors, wait longer
+        if self.quota_errors >= 3:
+            wait_time = min(300, self.quota_errors * 60)  # 5-15 minutes
+            print(f"⚠️  Multiple quota errors detected. Waiting {wait_time} seconds...")
+            time.sleep(wait_time)
+            self.quota_errors = 0
+            self.last_quota_reset = current_time
+        
+        # Reset quota errors after 1 hour
+        if current_time - self.last_quota_reset > 3600:
+            self.quota_errors = 0
+            self.last_quota_reset = current_time
     
     def analyze_url(self, url: str, strategy: str = 'mobile', 
                    category: str = 'performance') -> Optional[PSIResults]:
         """
-        Analyze a URL using PageSpeed Insights.
+        Analyze a URL using PageSpeed Insights with retry logic.
         
         Args:
             url: URL to analyze
@@ -52,38 +136,65 @@ class PageSpeedInsights:
                 print(f"Using cached PSI results for {url}")
                 return cached_result
         
-        try:
-            # Build request parameters
-            params = {
-                'url': url,
-                'key': self.api_key,
-                'strategy': strategy,
-                'category': category,
-                'utm_source': 'lead-finder'
-            }
-            
-            # Make request
-            response = requests.get(self.base_url, params=params, timeout=30)
-            response.raise_for_status()
-            
-            # Parse response
-            data = response.json()
-            psi_results = self._parse_psi_response(data)
-            
-            # Cache results
-            self.cache[cache_key] = (psi_results, time.time())
-            
-            # Rate limiting
-            rate_limit_delay(1.0 / config.FETCH['global_rps'])
-            
-            return psi_results
-            
-        except requests.exceptions.RequestException as e:
-            print(f"PageSpeed Insights request failed for {url}: {e}")
-            return None
-        except Exception as e:
-            print(f"Unexpected error analyzing {url}: {e}")
-            return None
+        # Try with retry logic
+        for attempt in range(self.max_retries + 1):
+            try:
+                # Get API key for this attempt
+                api_key = self._get_next_api_key()
+                
+                # Build request parameters
+                params = {
+                    'url': url,
+                    'key': api_key,
+                    'strategy': strategy,
+                    'category': category,
+                    'utm_source': 'lead-finder'
+                }
+                
+                # Make request with adaptive timeout
+                timeout = min(30 + (attempt * 10), 60)  # Increase timeout with each retry
+                response = requests.get(
+                    self.base_url, 
+                    params=params, 
+                    timeout=timeout,
+                    headers={'User-Agent': 'Lead-Finder/1.0'}
+                )
+                response.raise_for_status()
+                
+                # Parse response
+                data = response.json()
+                psi_results = self._parse_psi_response(data)
+                
+                # Cache results
+                self.cache[cache_key] = (psi_results, time.time())
+                
+                # Reset quota errors on success
+                self.quota_errors = 0
+                
+                # Rate limiting
+                rate_limit_delay(1.0 / config.FETCH['global_rps'])
+                
+                return psi_results
+                
+            except requests.exceptions.RequestException as e:
+                print(f"PageSpeed Insights request failed for {url} (attempt {attempt + 1}): {e}")
+                
+                # Check if we should retry
+                if self._should_retry(e, attempt):
+                    delay = self._calculate_delay(attempt, e)
+                    print(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    break
+                    
+            except Exception as e:
+                print(f"Unexpected error analyzing {url}: {e}")
+                break
+        
+        # If we get here, all retries failed
+        print(f"Failed to analyze {url} after {self.max_retries + 1} attempts")
+        return None
     
     def _parse_psi_response(self, data: Dict[str, Any]) -> PSIResults:
         """
@@ -262,6 +373,34 @@ class PageSpeedInsights:
 def create_psi_client() -> PageSpeedInsights:
     """Create a PageSpeed Insights client."""
     return PageSpeedInsights()
+
+
+def create_psi_client_with_keys(api_keys: List[str]) -> PageSpeedInsights:
+    """Create a PageSpeed Insights client with specific API keys."""
+    return PageSpeedInsights(api_keys=api_keys)
+
+
+def create_psi_client_from_env() -> PageSpeedInsights:
+    """Create a PageSpeed Insights client from environment variables."""
+    # Try to get multiple API keys
+    api_keys = []
+    
+    # Primary key
+    primary_key = os.getenv('GOOGLE_API_KEY')
+    if primary_key:
+        api_keys.append(primary_key)
+    
+    # Additional keys
+    for i in range(1, 6):
+        key = os.getenv(f'GOOGLE_API_KEY_{i}')
+        if key and key not in api_keys:
+            api_keys.append(key)
+    
+    if not api_keys:
+        raise ValueError("No Google API keys found in environment variables")
+    
+    print(f"🔑 Using {len(api_keys)} API key(s) for PageSpeed Insights")
+    return PageSpeedInsights(api_keys=api_keys)
 
 
 def analyze_lead_performance(lead_data: Dict[str, Any], psi_client: PageSpeedInsights) -> Dict[str, Any]:

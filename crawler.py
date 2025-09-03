@@ -330,9 +330,9 @@ class WebCrawler:
         
         return errors
     
-    def extract_hacked_signals(self, pages: List[CrawlResult]) -> List[str]:
+    def detect_hacked_signals(self, pages: List[CrawlResult]) -> List[str]:
         """
-        Extract signals of hacked/compromised websites.
+        Detect signs of hacked or compromised websites with confidence scores.
         
         Args:
             pages: List of crawled pages
@@ -348,11 +348,20 @@ class WebCrawler:
             
             content = page.content.lower()
             
-            # Check for pharma/casino spam
-            for pattern in config.REGEX_PATTERNS['pharma_spam']:
-                matches = re.findall(pattern, content, re.IGNORECASE)
-                if matches:
-                    signals.append(f"Spam content: {pattern}")
+            # Check for high-confidence spam patterns (100% confidence)
+            high_confidence_spam = self._check_spam_patterns(content, config.REGEX_PATTERNS['high_confidence_spam'], confidence=100)
+            if high_confidence_spam:
+                signals.extend(high_confidence_spam)
+            
+            # Check for medium-confidence spam patterns (60% confidence from config)
+            medium_confidence_spam = self._check_spam_patterns(content, config.REGEX_PATTERNS['medium_confidence_spam'], confidence=60)
+            if medium_confidence_spam:
+                signals.extend(medium_confidence_spam)
+            
+            # Check for low-confidence spam patterns (20% confidence from config)
+            low_confidence_spam = self._check_spam_patterns(content, config.REGEX_PATTERNS['low_confidence_spam'], confidence=20)
+            if low_confidence_spam:
+                signals.extend(low_confidence_spam)
             
             # Check for suspicious paths in URL
             suspicious_paths = [
@@ -363,8 +372,108 @@ class WebCrawler:
             for path in suspicious_paths:
                 if path in page.url.lower():
                     signals.append(f"Suspicious path: {path}")
+            
+            # Check for hidden spam content
+            if self._detect_hidden_spam(content):
+                signals.append("Hidden spam content detected (100% confidence)")
         
         return signals
+    
+    def _check_spam_patterns(self, content: str, patterns: list, confidence: int) -> list:
+        """Check for spam patterns with confidence scoring."""
+        spam_signals = []
+        
+        for pattern in patterns:
+            try:
+                matches = re.findall(pattern, content, re.IGNORECASE)
+                if matches:
+                    unique_matches = set(matches)
+                    
+                    # Different thresholds based on confidence level
+                    if confidence == 100:  # High confidence
+                        if len(unique_matches) >= 1:  # Single match is enough
+                            spam_signals.append(f"Spam content ({confidence}% confidence): {pattern}")
+                    elif confidence == 60:  # Medium confidence (updated from 70)
+                        if len(unique_matches) >= 2:  # Need 2+ matches
+                            spam_signals.append(f"Spam content ({confidence}% confidence): {pattern}")
+                    elif confidence == 20:  # Low confidence (updated from 30)
+                        if len(unique_matches) >= 3:  # Need 3+ matches
+                            spam_signals.append(f"Spam content ({confidence}% confidence): {pattern}")
+                            
+            except re.error as e:
+                print(f"⚠️  Invalid regex pattern: {pattern} - {e}")
+                continue
+        
+        return spam_signals
+    
+    def calculate_spam_confidence(self, signals: list) -> dict:
+        """Calculate overall spam confidence score and recommendation."""
+        high_confidence_count = sum(1 for signal in signals if "100% confidence" in signal)
+        medium_confidence_count = sum(1 for signal in signals if "60% confidence" in signal)
+        low_confidence_count = sum(1 for signal in signals if "20% confidence" in signal)
+        
+        # Calculate weighted confidence score
+        total_confidence = (high_confidence_count * 100) + (medium_confidence_count * 60) + (low_confidence_count * 20)
+        total_signals = high_confidence_count + medium_confidence_count + low_confidence_count
+        
+        if total_signals == 0:
+            avg_confidence = 0
+        else:
+            avg_confidence = total_confidence / total_signals
+        
+        # Determine recommendation
+        if avg_confidence >= 90:  # Increased from 80
+            recommendation = "REJECT - High confidence spam"
+        elif avg_confidence >= 40:  # Reduced from 50
+            recommendation = "REVIEW - Medium confidence, needs human review"
+        elif avg_confidence >= 15:  # Reduced from 20
+            recommendation = "ACCEPT - Low confidence, likely false positive"
+        else:
+            recommendation = "ACCEPT - No spam detected"
+        
+        return {
+            'avg_confidence': avg_confidence,
+            'high_confidence_count': high_confidence_count,
+            'medium_confidence_count': medium_confidence_count,
+            'low_confidence_count': low_confidence_count,
+            'total_signals': total_signals,
+            'recommendation': recommendation
+        }
+    
+    def _is_legitimate_business_content(self, content: str) -> bool:
+        """Check if content contains legitimate business terms that shouldn't be flagged as spam."""
+        legitimate_business_terms = [
+            'dermatology', 'dermatologist', 'medspa', 'medical spa', 'aesthetics',
+            'cosmetic', 'plastic surgery', 'salon', 'hair salon', 'nail salon',
+            'beauty salon', 'spa', 'wellness', 'fitness', 'yoga', 'pilates',
+            'dental', 'dentist', 'orthodontist', 'law firm', 'attorney', 'lawyer',
+            'legal', 'practice', 'clinic', 'medical', 'health', 'care',
+            'appointment', 'consultation', 'treatment', 'service', 'professional'
+        ]
+        
+        # Count legitimate business terms
+        business_term_count = 0
+        for term in legitimate_business_terms:
+            if term in content:
+                business_term_count += 1
+        
+        # If content has multiple legitimate business terms, it's likely not spam
+        return business_term_count >= 2
+    
+    def _detect_hidden_spam(self, content: str) -> bool:
+        """Detect hidden spam content using CSS and HTML patterns."""
+        # Check for display:none or visibility:hidden with spam keywords
+        hidden_patterns = [
+            r'<div[^>]*style\s*=\s*["\'][^"\']*display\s*:\s*none[^"\']*["\'][^>]*>.*?(?:viagra|cialis|casino|porn|forex)',
+            r'<span[^>]*style\s*=\s*["\'][^"\']*visibility\s*:\s*hidden[^"\']*["\'][^>]*>.*?(?:viagra|cialis|casino|porn|forex)',
+            r'<div[^>]*class\s*=\s*["\'][^"\']*hidden[^"\']*["\'][^>]*>.*?(?:viagra|cialis|casino|porn|forex)'
+        ]
+        
+        for pattern in hidden_patterns:
+            if re.search(pattern, content, re.IGNORECASE | re.DOTALL):
+                return True
+        
+        return False
     
     def extract_contact_info(self, pages: List[CrawlResult]) -> Dict:
         """

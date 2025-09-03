@@ -31,7 +31,15 @@ class LeadFinder:
             google_cse_id: Google CSE ID (optional, can use env var)
         """
         self.cse_client = create_cse_client()
-        self.psi_client = create_psi_client()
+        
+        # Use enhanced PSI client with multiple API key support
+        try:
+            self.psi_client = create_psi_client_from_env()
+        except Exception as e:
+            print(f"⚠️  Warning: Could not create enhanced PSI client: {e}")
+            print("Falling back to basic PSI client...")
+            self.psi_client = create_psi_client()
+        
         self.query_manager = QueryManager()
         
         # Tracking
@@ -251,7 +259,7 @@ class LeadFinder:
             security_info = crawler.extract_security_info(probe.pages)
             seo_info = crawler.extract_seo_info(probe.pages)
             errors = crawler.extract_errors(probe.pages)
-            hacked_signals = crawler.extract_hacked_signals(probe.pages)
+            hacked_signals = crawler.detect_hacked_signals(probe.pages)
             contact_info = crawler.extract_contact_info(probe.pages)
             
             # Determine ownership
@@ -378,7 +386,7 @@ class LeadFinder:
             await self._probe_domains(list(domains))
     
     async def _probe_domains(self, domains: List[str]) -> None:
-        """Probe a list of domains."""
+        """Probe a list of domains with improved parallel processing."""
         # Convert domains to URLs
         urls = []
         for domain in domains:
@@ -389,15 +397,47 @@ class LeadFinder:
         
         print(f"Probing {len(urls)} domains...")
         
-        # Probe domains concurrently
-        probes = await probe_domains(urls, max_concurrent=config.FETCH['max_concurrent'])
+        # Increase concurrency for better performance
+        max_concurrent = min(len(urls), config.FETCH['max_concurrent'] * 2)
         
-        # Process each probe
-        for probe in probes:
-            if len(self.leads) >= 100:  # Check again
-                break
+        # Probe domains concurrently with improved error handling
+        try:
+            probes = await probe_domains(urls, max_concurrent=max_concurrent)
             
-            await self._process_domain_probe(probe)
+            # Process each probe with better error handling
+            for probe in probes:
+                if len(self.leads) >= 100:  # Check again
+                    break
+                
+                try:
+                    await self._process_domain_probe(probe)
+                except Exception as e:
+                    print(f"⚠️  Error processing probe for {probe.domain}: {e}")
+                    self.rejected_domains[probe.domain] = f"probe_processing_error: {str(e)}"
+                    self.stats['domains_rejected'] += 1
+                    
+        except Exception as e:
+            print(f"⚠️  Error during domain probing: {e}")
+            # Fall back to sequential processing
+            print("Falling back to sequential processing...")
+            for url in urls:
+                try:
+                    domain = extract_domain(url)
+                    if len(self.leads) >= 100:
+                        break
+                    
+                    # Create a simple probe
+                    from models import DomainProbe, CrawlResult
+                    simple_probe = DomainProbe(
+                        domain=domain,
+                        pages=[CrawlResult(url=url, status_code=0, content="")]
+                    )
+                    await self._process_domain_probe(simple_probe)
+                    
+                except Exception as probe_error:
+                    print(f"⚠️  Error processing {url}: {probe_error}")
+                    self.rejected_domains[extract_domain(url)] = f"fallback_error: {str(probe_error)}"
+                    self.stats['domains_rejected'] += 1
     
     async def _process_domain_probe(self, probe: DomainProbe) -> None:
         """Process a single domain probe."""
@@ -426,7 +466,7 @@ class LeadFinder:
             errors = crawler.extract_errors(probe.pages)
             
             # Extract hacked signals
-            hacked_signals = crawler.extract_hacked_signals(probe.pages)
+            hacked_signals = crawler.detect_hacked_signals(probe.pages)
             
             # Extract contact info
             contact_info = crawler.extract_contact_info(probe.pages)
@@ -468,17 +508,35 @@ class LeadFinder:
                 'evidence_urls': [p.url for p in probe.pages[:3] if p.status_code < 400]
             }
             
-            # Validate lead
-            if not self._validate_lead(lead_data):
+            # 🚨 CRITICAL FIX: Analyze performance FIRST (before spam validation)
+            # This ensures we capture PSI data even if spam filter fires
+            if owner_valid:
+                lead_data = await self._analyze_performance(lead_data)
+            
+            # 🚨 CRITICAL FIX: Check for critical performance issues BEFORE spam validation
+            # Sites with perf_score < 50 should ALWAYS go to human review
+            critical_performance_issue = False
+            performance_override_reason = None
+            if lead_data.get('psi') and lead_data['psi'].get('perf'):
+                perf_score = lead_data['psi']['perf']
+                if perf_score <= 45:
+                    critical_performance_issue = True
+                    performance_override_reason = "perf_low"
+                    print(f"🚨 CRITICAL: {domain} has performance score {perf_score}/100 - ALWAYS allowing through for human review!")
+                elif perf_score <= 60:
+                    print(f"⚠️  MODERATE: {domain} has performance score {perf_score}/100 - performance opportunity")
+            
+            # Add vertical categorization
+            vertical_tag = self.categorize_business_vertical(lead_data)
+            lead_data['vertical_tag'] = vertical_tag
+            
+            # Validate lead (but allow critical performance issues through)
+            if not self._validate_lead(lead_data, critical_performance_issue, performance_override_reason):
                 reason = "failed_validation"
                 self.rejected_domains[domain] = reason
                 self.stats['domains_rejected'] += 1
                 print(f"Rejected {domain}: {reason}")
                 return
-            
-            # Analyze performance with PageSpeed Insights
-            if owner_valid:
-                lead_data = await self._analyze_performance(lead_data)
             
             # Calculate score and tier
             score, tier = calculate_score(lead_data)
@@ -487,6 +545,16 @@ class LeadFinder:
             
             # Create Lead object
             lead = Lead(**lead_data)
+            
+            # Add performance override reason if applicable
+            if performance_override_reason:
+                setattr(lead, 'performance_override_reason', performance_override_reason)
+            
+            # Add spam confidence for CSV export
+            if lead_data.get('hacked_signals'):
+                crawler = WebCrawler()
+                spam_analysis = crawler.calculate_spam_confidence(lead_data['hacked_signals'])
+                setattr(lead, 'spam_confidence', f"{spam_analysis['avg_confidence']:.1f}%")
             
             # Add to leads if score is high enough
             if score >= config.SCORE_MIN:
@@ -504,7 +572,7 @@ class LeadFinder:
             self.rejected_domains[domain] = f"processing_error: {str(e)}"
             self.stats['domains_rejected'] += 1
     
-    def _validate_lead(self, lead_data: Dict[str, Any]) -> bool:
+    def _validate_lead(self, lead_data: Dict[str, Any], critical_performance_issue: bool = False, performance_override_reason: Optional[str] = None) -> bool:
         """Validate if a lead meets basic criteria."""
         # Must have a valid domain
         if not lead_data.get('domain'):
@@ -518,8 +586,124 @@ class LeadFinder:
         if not lead_data.get('evidence_urls'):
             return False
         
+        # Allow leads with critical performance issues through
+        if critical_performance_issue:
+            print(f"✅ {lead_data.get('domain', 'unknown')}: Critical performance issue detected, allowing through for human review.")
+            if performance_override_reason:
+                print(f"   📊 Override reason: {performance_override_reason}")
+            return True
+        
+        # Enhanced validation: CONFIDENCE-BASED SPAM DETECTION
+        if lead_data.get('hacked_signals'):
+            # Calculate spam confidence
+            crawler = WebCrawler()
+            spam_analysis = crawler.calculate_spam_confidence(lead_data['hacked_signals'])
+            
+            # Check if this is a legitimate business
+            is_legitimate_business = False
+            if lead_data.get('brand_name'):
+                brand_lower = lead_data['brand_name'].lower()
+                business_terms = [
+                    # Medical & Wellness
+                    'dermatology', 'medspa', 'salon', 'dental', 'spa', 'wellness', 'fitness', 'medical', 'aesthetics', 'cosmetic', 'plastic surgery',
+                    'orthodontist', 'orthodontic', 'lasik', 'eye surgery', 'vision correction', 'ophthalmologist', 'optometrist', 'chiropractor', 'chiropractic',
+                    # Legal & Professional Services
+                    'law firm', 'attorney', 'law office', 'legal practice', 'lawyer', 'cpa', 'accountant', 'accounting firm', 'tax preparation', 'tax services',
+                    # Hospitality & Food
+                    'catering', 'catering company', 'event catering', 'restaurant', 'dining', 'fine dining', 'wine bar', 'cocktail bar', 'bar', 'hotel', 'boutique hotel', 'luxury hotel',
+                    # Events & Venues
+                    'event venue', 'wedding venue', 'party venue', 'venue', 'events',
+                    # Retail & Luxury
+                    'jeweler', 'jewelry store', 'fine jewelry', 'gallery', 'art gallery',
+                    # Home Services
+                    'remodeler', 'home remodeling', 'kitchen remodeling', 'bathroom remodeling', 'hvac', 'heating and cooling', 'air conditioning', 'roofing', 'roofing company', 'roof repair',
+                    # Automotive
+                    'auto repair', 'car repair', 'automotive service', 'dealership', 'car dealership', 'auto dealership',
+                    # General Business
+                    'clinic', 'specialist', 'practice', 'studio', 'center', 'group'
+                ]
+                if any(term in brand_lower for term in business_terms):
+                    is_legitimate_business = True
+            
+            # CONFIDENCE-BASED VALIDATION
+            avg_confidence = spam_analysis['avg_confidence']
+            
+            # 🚨 CRITICAL FIX: If this is a critical performance issue, ALWAYS allow through
+            if critical_performance_issue:
+                print(f"🚨 OVERRIDE: {lead_data.get('domain', 'unknown')}: Critical performance issue - bypassing spam filter for human review!")
+                return True
+            
+            if avg_confidence >= 90:  # Increased from 80
+                # High confidence spam - reject regardless of business type
+                print(f"❌ Rejecting {lead_data.get('domain', 'unknown')}: High confidence spam ({avg_confidence:.1f}%)")
+                return False
+            elif avg_confidence >= 40:  # Reduced from 50
+                # Medium confidence - review bucket for legitimate businesses
+                if is_legitimate_business:
+                    # Legitimate businesses with medium confidence get review
+                    print(f"⚠️  {lead_data.get('domain', 'unknown')}: Medium spam confidence ({avg_confidence:.1f}%) - adding to review bucket")
+                    return True
+                else:
+                    # Non-business sites with medium confidence get rejected
+                    print(f"❌ Rejecting {lead_data.get('domain', 'unknown')}: Medium confidence spam ({avg_confidence:.1f}%) for non-business site")
+                    return False
+            elif avg_confidence >= 15:  # Reduced from 20
+                # Low confidence - likely false positive, allow through
+                print(f"✅ {lead_data.get('domain', 'unknown')}: Low spam confidence ({avg_confidence:.1f}%) - likely false positive")
+                return True
+            else:
+                # No spam detected
+                print(f"✅ {lead_data.get('domain', 'unknown')}: No spam detected")
+                return True
+        
+        # Reject if hidden spam is detected (regardless of business type)
+        if lead_data.get('hacked_signals'):
+            if any('Hidden spam content detected (100% confidence)' in signal for signal in lead_data['hacked_signals']):
+                print(f"❌ Rejecting {lead_data.get('domain', 'unknown')}: Hidden spam detected")
+                return False
+        
         return True
-    
+
+    def categorize_business_vertical(self, lead_data: Dict[str, Any]) -> str:
+        """Categorize business into vertical for sorting and analysis."""
+        if not lead_data.get('brand_name'):
+            return "unknown"
+        
+        brand_lower = lead_data['brand_name'].lower()
+        
+        # Medical & Beauty
+        medical_terms = ['dermatology', 'medspa', 'salon', 'dental', 'orthodontist', 'orthodontic', 'lasik', 'eye surgery', 'vision correction', 'ophthalmologist', 'optometrist', 'chiropractor', 'chiropractic', 'clinic', 'medical', 'aesthetics', 'cosmetic', 'plastic surgery', 'spa', 'wellness', 'fitness', 'beauty']
+        if any(term in brand_lower for term in medical_terms):
+            return "medical_beauty"
+        
+        # Restaurant & Hospitality
+        hospitality_terms = ['restaurant', 'dining', 'fine dining', 'wine bar', 'cocktail bar', 'bar', 'hotel', 'boutique hotel', 'luxury hotel', 'catering', 'catering company', 'event catering', 'venue', 'events', 'wedding venue', 'party venue']
+        if any(term in brand_lower for term in hospitality_terms):
+            return "restaurant_hospitality"
+        
+        # Retail & Luxury
+        retail_terms = ['jeweler', 'jewelry store', 'fine jewelry', 'gallery', 'art gallery', 'store', 'shop', 'boutique']
+        if any(term in brand_lower for term in retail_terms):
+            return "retail_luxury"
+        
+        # Home Services
+        home_terms = ['remodeler', 'home remodeling', 'kitchen remodeling', 'bathroom remodeling', 'hvac', 'heating and cooling', 'air conditioning', 'roofing', 'roofing company', 'roof repair']
+        if any(term in brand_lower for term in home_terms):
+            return "home_services"
+        
+        # Automotive
+        auto_terms = ['auto repair', 'car repair', 'automotive service', 'dealership', 'car dealership', 'auto dealership']
+        if any(term in brand_lower for term in auto_terms):
+            return "automotive"
+        
+        # Legal & Professional
+        legal_terms = ['law firm', 'attorney', 'law office', 'legal practice', 'lawyer', 'cpa', 'accountant', 'accounting firm', 'tax preparation', 'tax services']
+        if any(term in brand_lower for term in legal_terms):
+            return "legal_professional"
+        
+        return "other"
+
+
     async def _analyze_performance(self, lead_data: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze performance for a lead."""
         try:
@@ -528,7 +712,8 @@ class LeadFinder:
             print(f"Error analyzing performance: {e}")
         
         return lead_data
-    
+
+
     async def _finalize_leads(self) -> None:
         """Finalize lead processing."""
         # Sort leads by score (highest first)
@@ -537,7 +722,8 @@ class LeadFinder:
         # Update metadata
         for lead in self.leads:
             lead.last_checked = datetime.now()
-    
+
+
     def _print_summary(self) -> None:
         """Print summary statistics."""
         runtime = time.time() - self.stats['start_time']
@@ -563,7 +749,8 @@ class LeadFinder:
         print("\nTop 5 leads:")
         for i, lead in enumerate(self.leads[:5]):
             print(f"  {i+1}. {lead.domain} - Score: {lead.score}, Tier: {lead.tier}")
-    
+
+
     def save_leads(self, filename: str = None) -> str:
         """Save leads to a JSON file."""
         if not filename:
@@ -581,7 +768,8 @@ class LeadFinder:
         
         print(f"Saved {len(self.leads)} leads to {filename}")
         return filename
-    
+
+
     def save_rejected_domains(self, filename: str = None) -> str:
         """Save rejected domains to a JSON file."""
         if not filename:
@@ -595,11 +783,13 @@ class LeadFinder:
         
         print(f"Saved {len(self.rejected_domains)} rejected domains to {filename}")
         return filename
-    
+
+
     def get_leads_by_tier(self, tier: str) -> List[Lead]:
         """Get leads by tier."""
         return [lead for lead in self.leads if lead.tier == tier]
-    
+
+
     def get_leads_by_score_range(self, min_score: int, max_score: int) -> List[Lead]:
         """Get leads within a score range."""
         return [lead for lead in self.leads if min_score <= lead.score <= max_score]

@@ -8,6 +8,9 @@ import json
 from typing import List, Optional
 from lead_finder import LeadFinder
 from google_cse import QueryManager
+import os
+from datetime import datetime
+import csv
 
 
 @click.group()
@@ -224,57 +227,188 @@ def export(input, output, format):
         raise click.Abort()
 
 
-def export_to_csv(leads_data, output):
-    """Export leads to CSV format."""
-    import csv
+def export_to_csv(leads, filename=None):
+    """Export leads to CSV with enhanced PSI metrics and vertical categorization."""
+    if not leads:
+        print("No leads to export")
+        return
     
-    if not output:
-        from datetime import datetime
+    if filename is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output = f"reports/leads_export_{timestamp}.csv"
-    elif not output.startswith('reports/'):
-        output = f"reports/{output}"
+        filename = f"reports/leads_export_{timestamp}.csv"
     
-    # Define CSV fields
-    fields = [
-        'domain', 'brand_name', 'score', 'tier', 'owner_valid', 'platform_subdomain',
-        'cms', 'wp_version', 'jquery_version', 'https', 'mixed_content',
-        'title_missing', 'meta_desc_missing', 'robots_noindex',
-        'phone', 'email', 'form', 'address',
-        'best_rank', 'top_query', 'seo_opportunity'
-    ]
+    # Ensure reports directory exists
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
     
-    with open(output, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fields)
-        writer.writeheader()
-        
-        for lead in leads_data:
+    # Prepare data for CSV
+    csv_data = []
+    all_fieldnames = set([
+        'domain', 'brand_name', 'vertical_tag', 'score', 'tier', 'phone', 'email', 'address',
+        'cms', 'wp_version', 'performance_score', 'ttfb_ms', 'lcp_ms', 'cls', 'psi_status',
+        'spam_confidence', 'performance_override', 'override_reason', 'technical_issues', 'seo_issues', 'pitch_hook'
+    ])
+    
+    for lead in leads:
+        # Handle both Lead objects and dictionaries
+        if hasattr(lead, 'domain'):
+            # Lead object
+            row = {
+                'domain': lead.domain,
+                'brand_name': lead.brand_name or '',
+                'vertical_tag': getattr(lead, 'vertical_tag', 'unknown'),
+                'score': lead.score,
+                'tier': lead.tier,
+                'phone': lead.contact.phone if lead.contact and lead.contact.phone else '',
+                'email': lead.contact.email if lead.contact and lead.contact.email else '',
+                'address': lead.contact.address if lead.contact and lead.contact.address else '',
+                'cms': lead.tech.cms if lead.tech and lead.tech.cms else '',
+                'wp_version': lead.tech.wp_version if lead.tech and lead.tech.wp_version else '',
+                'performance_score': lead.psi.perf if lead.psi and lead.psi.perf else '',
+                'ttfb_ms': lead.psi.ttfb_ms if lead.psi and lead.psi.ttfb_ms else '',
+                'lcp_ms': lead.psi.lcp_ms if lead.psi and lead.psi.lcp_ms else '',
+                'cls': lead.psi.cls if lead.psi and lead.psi.cls else '',
+                'psi_status': 'success' if lead.psi and lead.psi.perf else 'failed',
+                'spam_confidence': getattr(lead, 'spam_confidence', ''),
+                'performance_override': 'yes' if getattr(lead, 'performance_override_reason', None) else 'no',
+                'override_reason': getattr(lead, 'performance_override_reason', ''),
+                'technical_issues': len(lead.errors) if lead.errors else 0,
+                'seo_issues': sum([
+                    1 if lead.seo.title_missing else 0,
+                    1 if lead.seo.meta_desc_missing else 0,
+                    1 if lead.seo.robots_noindex else 0
+                ]),
+                'pitch_hook': generate_pitch_hook(lead)
+            }
+            
+            # Flatten meta fields for CSV
+            meta = getattr(lead, 'meta', {}) or {}
+            for k, v in meta.items():
+                meta_key = f'meta_{k}'
+                row[meta_key] = v
+                all_fieldnames.add(meta_key)
+        else:
+            # Dictionary
             row = {
                 'domain': lead.get('domain', ''),
                 'brand_name': lead.get('brand_name', ''),
+                'vertical_tag': lead.get('vertical_tag', 'unknown'),
                 'score': lead.get('score', 0),
                 'tier': lead.get('tier', ''),
-                'owner_valid': lead.get('owner_valid', False),
-                'platform_subdomain': lead.get('platform_subdomain', False),
-                'cms': lead.get('tech', {}).get('cms', ''),
-                'wp_version': lead.get('tech', {}).get('wp_version', ''),
-                'jquery_version': lead.get('tech', {}).get('jquery_version', ''),
-                'https': lead.get('security', {}).get('https', True),
-                'mixed_content': lead.get('security', {}).get('mixed_content', False),
-                'title_missing': lead.get('seo', {}).get('title_missing', False),
-                'meta_desc_missing': lead.get('seo', {}).get('meta_desc_missing', False),
-                'robots_noindex': lead.get('seo', {}).get('robots_noindex', False),
-                'phone': lead.get('contact', {}).get('phone', ''),
-                'email': lead.get('contact', {}).get('email', ''),
-                'form': lead.get('contact', {}).get('form', False),
-                'address': lead.get('contact', {}).get('address', ''),
-                'best_rank': lead.get('best_rank', ''),
-                'top_query': lead.get('top_query', ''),
-                'seo_opportunity': lead.get('seo_opportunity', '')
+                'phone': lead.get('contact', {}).get('phone', '') if lead.get('contact') else '',
+                'email': lead.get('contact', {}).get('email', '') if lead.get('contact') else '',
+                'address': lead.get('contact', {}).get('address', '') if lead.get('contact') else '',
+                'cms': lead.get('tech', {}).get('cms', '') if lead.get('tech') else '',
+                'wp_version': lead.get('tech', {}).get('wp_version', '') if lead.get('tech') else '',
+                'performance_score': lead.get('psi', {}).get('perf', '') if lead.get('psi') else '',
+                'ttfb_ms': lead.get('psi', {}).get('ttfb_ms', '') if lead.get('psi') else '',
+                'lcp_ms': lead.get('psi', {}).get('lcp_ms', '') if lead.get('psi') else '',
+                'cls': lead.get('psi', {}).get('cls', '') if lead.get('psi') else '',
+                'psi_status': 'success' if lead.get('psi', {}).get('perf') else 'failed',
+                'spam_confidence': lead.get('spam_confidence', ''),
+                'performance_override': 'yes' if lead.get('performance_override_reason') else 'no',
+                'override_reason': lead.get('performance_override_reason', ''),
+                'technical_issues': len(lead.get('errors', [])),
+                'seo_issues': sum([
+                    1 if lead.get('seo', {}).get('title_missing') else 0,
+                    1 if lead.get('seo', {}).get('meta_desc_missing') else 0,
+                    1 if lead.get('seo', {}).get('robots_noindex') else 0
+                ]),
+                'pitch_hook': generate_pitch_hook(lead)
             }
-            writer.writerow(row)
+            
+            # Flatten meta fields for CSV
+            meta = lead.get('meta', {}) or {}
+            for k, v in meta.items():
+                meta_key = f'meta_{k}'
+                row[meta_key] = v
+                all_fieldnames.add(meta_key)
+        
+        csv_data.append(row)
     
-    click.echo(f"✅ Exported {len(leads_data)} leads to CSV: {output}")
+    # Write to CSV
+    with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = sorted(list(all_fieldnames))
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(csv_data)
+    
+    print(f"✅ Exported {len(leads)} leads to CSV: {filename}")
+    return filename
+
+def export_dual_csv(leads, base_filename=None):
+    """Export leads to two separate CSV files: primary (NYC + perf <= 60) and review (everything else)."""
+    if not leads:
+        print("No leads to export")
+        return
+    
+    if base_filename is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = f"reports/leads_{timestamp}"
+    
+    # Ensure reports directory exists
+    os.makedirs(os.path.dirname(base_filename), exist_ok=True)
+    
+    # Separate leads into primary and review
+    primary_leads = []
+    review_leads = []
+    
+    for lead in leads:
+        # Handle both Lead objects and dictionaries
+        if hasattr(lead, 'domain'):
+            # Lead object
+            perf_score = lead.psi.perf if lead.psi and lead.psi.perf else 100
+            is_nyc = any(neighborhood in (lead.brand_name or '').lower() for neighborhood in 
+                        ['tribeca', 'soho', 'upper east side', 'west village', 'williamsburg', 'nyc', 'new york'])
+            has_performance_override = getattr(lead, 'performance_override_reason', None) is not None
+        else:
+            # Dictionary
+            perf_score = lead.get('psi', {}).get('perf', 100) if lead.get('psi') else 100
+            brand_name = lead.get('brand_name', '').lower()
+            is_nyc = any(neighborhood in brand_name for neighborhood in 
+                        ['tribeca', 'soho', 'upper east side', 'west village', 'williamsburg', 'nyc', 'new york'])
+            has_performance_override = lead.get('performance_override_reason') is not None
+        
+        # Primary leads: NYC + performance_score <= 60 OR any performance override
+        if (is_nyc and perf_score <= 60) or has_performance_override:
+            primary_leads.append(lead)
+        else:
+            review_leads.append(lead)
+    
+    # Export primary leads
+    primary_filename = f"{base_filename}_primary.csv"
+    if primary_leads:
+        export_to_csv(primary_leads, primary_filename)
+        print(f"🎯 Primary leads (NYC + perf <= 60): {len(primary_leads)}")
+    else:
+        print("⚠️  No primary leads found")
+    
+    # Export review leads
+    review_filename = f"{base_filename}_review.csv"
+    if review_leads:
+        export_to_csv(review_leads, review_filename)
+        print(f"📋 Review leads (everything else): {len(review_leads)}")
+    else:
+        print("⚠️  No review leads found")
+    
+    return primary_filename, review_filename
+
+def generate_pitch_hook(lead):
+    """Generate a pitch hook for quick actionability."""
+    try:
+        if hasattr(lead, 'psi') and lead.psi and lead.psi.perf:
+            perf_score = lead.psi.perf
+            if perf_score <= 45:
+                return f"🚨 CRITICAL: Perf {perf_score}/100 - Complete overhaul needed!"
+            elif perf_score <= 60:
+                return f"🐌 Poor: Perf {perf_score}/100 - Speed optimization opportunity"
+            elif perf_score <= 80:
+                return f"⚠️  Moderate: Perf {perf_score}/100 - Room for improvement"
+            else:
+                return f"✅ Good: Perf {perf_score}/100 - Minor optimizations"
+        else:
+            return "No performance data"
+    except:
+        return "Error generating pitch hook"
 
 
 def export_to_json(leads_data, output):

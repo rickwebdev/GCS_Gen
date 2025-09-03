@@ -93,6 +93,14 @@ class Lead(BaseModel):
     seo_opportunity: Optional[int] = None
     rank_queries: List[str] = Field(default_factory=list)
     
+    # NEW: Performance override and spam analysis fields
+    performance_override_reason: Optional[str] = None
+    spam_confidence: Optional[str] = None
+    vertical_tag: Optional[str] = None
+    
+    # NEW: Catch-all meta dict for future fields (logger-friendly)
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    
     # Metadata
     discovered_at: datetime = Field(default_factory=datetime.now)
     last_checked: datetime = Field(default_factory=datetime.now)

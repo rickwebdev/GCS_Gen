@@ -75,8 +75,30 @@ REGEX_PATTERNS = {
         r"Fatal error:"
     ],
     "pharma_spam": [
-        r"\b(viagra|cialis|levitra|tramadol|casino|porn|poker|forex)\b",
+        r"\b(viagra|cialis|levitra|tramadol|sildenafil|tadalafil)\b",
         r"[\u3040-\u30ff\u4e00-\u9faf]"  # Hiragana/Katakana/CJK
+    ],
+    "high_confidence_spam": [
+        # DEFINITE SPAM - 100% confidence (only the most obvious and unambiguous)
+        r"\b(viagra|cialis|levitra|tramadol|sildenafil|tadalafil)\b",
+        r"\b(casino|poker|slot|betting|gambling|lottery|roulette|blackjack)\b",
+        r"\b(porn|sex|adult|xxx|nude|escort|hooker)\b",
+        r"\b(forex|binary|trading|investment|loan|credit|make money fast|get rich quick)\b",
+        # Only flag obvious spam comments and meta tags
+        r"<!--\s*(?:viagra|cialis|casino|porn|forex)\s*-->",
+        r'<meta\s+name\s*=\s*["\']keywords["\'][^>]*content\s*=\s*["\'][^"\']*(?:viagra|cialis|casino|porn|forex)[^"\']*["\']'
+    ],
+    "medium_confidence_spam": [
+        # SUSPICIOUS - 60% confidence (reduced from 70%)
+        # Made more conservative to reduce false positives
+        r"\b(buy\s+now|cheap|discount|offer|limited\s+time|act\s+now|don't\s+miss)\b",
+        # Only flag obvious spam links, not legitimate business content
+        r"<a[^>]*href\s*=\s*['\"][^'\"]*(?:casino|porn|viagra|cialis)[^'\"]*['\"][^>]*>"
+    ],
+    "low_confidence_spam": [
+        # WEAK INDICATORS - 20% confidence (reduced from 30%)
+        r"\b(seo|optimization|ranking)\b.*\b(seo|optimization|ranking)\b",
+        r"\b(click here|learn more|read more)\b"
     ],
     "wp_version": [
         r'name=["\']generator["\'][^>]*content=["\'][^"\']*WordPress\s*([\d\.]+)',
