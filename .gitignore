@@ -2,6 +2,7 @@
 
 # ===== GENERATED REPORTS & OUTPUTS =====
 reports/
+report logs/
 *.json
 *.csv
 *.txt
