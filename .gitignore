@@ -1,0 +1,113 @@
+# Lead Finder Project - Git Ignore
+
+# ===== GENERATED REPORTS & OUTPUTS =====
+reports/
+*.json
+*.csv
+*.txt
+leads_*.json
+leads_export_*.csv
+rejected_domains_*.json
+leads_summary_*.txt
+
+# ===== API KEYS & CREDENTIALS =====
+.env
+.env.local
+.env.production
+.env.staging
+api_config.py
+*_config.py
+credentials.json
+token.json
+secrets.json
+
+# ===== PYTHON =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ===== VIRTUAL ENVIRONMENTS =====
+lead_finder_env/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# ===== IDE & EDITOR FILES =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== LOGS =====
+*.log
+logs/
+log/
+
+# ===== CACHE & TEMP =====
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# ===== OS GENERATED =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===== BACKUP FILES =====
+*.bak
+*.backup
+*.old
+*.tmp
+*.temp
+
+# ===== TEST OUTPUTS =====
+test_*.py
+test_*.csv
+test_*.json
+demo_*.py
+demo_*.csv
+demo_*.json
+
+# ===== PERSONAL SCRIPTS =====
+search_scripts/
+personal/
+temp/
+scratch/ 
