@@ -9,8 +9,8 @@ EXCLUDES_HOST = [
     "grubhub", "doordash", "uber", "lyft"
 ]
 
-# TLD exclusions
-EXCLUDES_TLD = [".edu", ".gov", ".ac.", ".mil", ".int"]
+# TLD exclusions - focus on business domains only
+EXCLUDES_TLD = [".edu", ".gov", ".ac.", ".mil", ".int", ".org"]
 
 # File extension exclusions
 EXCLUDES_EXT = [".pdf", ".xml", ".txt", ".gz", ".zip", ".rar", ".doc", ".docx"]
@@ -19,6 +19,43 @@ EXCLUDES_EXT = [".pdf", ".xml", ".txt", ".gz", ".zip", ".rar", ".doc", ".docx"]
 EXCLUDES_PATH = [
     "sitemap", "/feed", "/tag/", "/category/", "/author/", "nav.php", "go.php",
     "/20/", "/2023/", "/2022/", "/2021/", "/2020/"
+]
+
+# Previously scanned domains - exclude to avoid re-analysis
+PREVIOUSLY_SCANNED_DOMAINS = [
+    # Derm / Medspa / Health
+    "springstderm.com", "tribecaskincenter.com", "thedermspecs.com", "peninsuladermatologyva.com",
+    "dermatologycenterofwilliamsburg.com", "skinlab-nyc.com", "schweigerderm.com", "triparkderm.com",
+    "pschr.com", "sinyderm.com", "pariserderm.com", "weiserskin.com", "couturemedspa.com",
+    "evolvemedspa.com", "the-mspa.com", "brooklyn-dermatology.com", "newbloomderm.com",
+    
+    # Spas / Salons / Wellness
+    "soho-hawaii.com", "soho-wellness.com", "williamsburgsaltspa.com", "abathhouse.com",
+    "tribecasalon.com", "havenspa.nyc", "blissspa.com", "sohonailsspachesterfield.com",
+    "sohobubblespanyc.com", "sohosalons.com", "aestheticswall.com", "artisticnailwilliamsburg.com",
+    "williamsburgbeautyspa.com", "damianwestsalon.com", "sohonailsandlashes.com", "shampooavenueb.com",
+    "thesisleyspa.com", "tokuyamasalon.com", "romanksalon.com",
+    
+    # Restaurants / Hospitality
+    "lapecorabianca.com", "onewhitestreetnyc.com", "tamarindtribeca.com", "charliebirdnyc.com",
+    "dellasnyc.com", "fatcanarywilliamsburg.com", "leyacawilliamsburg.org", "foodforthoughtrestaurant.com",
+    "themanner.com", "juliettebk.com", "walkerhotels.com", "thegreenwichhotel.com",
+    "rosewoodhotels.com", "thedominickhotel.com", "spa.cowshed.com", "fabioscalia.com",
+    "laicale.com", "lilianewyork.com", "estelanyc.com", "delfriscosgrille.com",
+    "thecornerstoresoho.com", "gknyc.com", "perrinenyc.com", "brooklyndiner.com",
+    "frenchettenyc.com", "stoutnyc.com", "serendipity3.com", "villardnyc.com",
+    "oceanarestaurant.com", "philippechow.com", "palmanyc.com", "sundayinbrooklyn.com",
+    "junoonnyc.com", "theseafiregrill.com", "frankiesspuntino.com", "loringplacenyc.com",
+    "freemansrestaurant.com", "redroosterharlem.com", "rivercafe.com", "rubirosanyc.com",
+    "mastrosrestaurants.com", "robertnyc.com", "lecoucou.com", "brunosofbrooklyn.com",
+    "casamononyc.com",
+    
+    # Other
+    "berrets.com", "visitwilliamsburg.com", "sohorochesterhills.com", "williamsburgwinery.com",
+    "sohohome.com", "pera-soho.com", "norr11.com", "everbody.com", "chambers.nyc",
+    "tribecalawsuitloans.com", "tribecaspa.nyc", "beaire.com", "koolinashops.com",
+    "williamsburglawgroup.com", "columbiadoctors.org", "grsm.com", "skytalegroup.com",
+    "joossefamilyorthodontics.com", "nyc-cpa.com", "thenycalliance.org", "osc.ny.gov"
 ]
 
 # Fetch configuration

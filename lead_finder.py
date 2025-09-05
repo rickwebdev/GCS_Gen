@@ -14,7 +14,7 @@ from crawler import WebCrawler, probe_domains
 from pagespeed import PageSpeedInsights, create_psi_client, analyze_lead_performance
 from utils import (
     extract_domain, canonicalize_url, get_root_url, is_platform_subdomain,
-    is_owner_site, extract_brand_name, calculate_score, sanitize_filename
+    is_owner_site, extract_brand_name, calculate_lead_score_enhanced, sanitize_filename
 )
 from bs4 import BeautifulSoup
 
@@ -245,6 +245,13 @@ class LeadFinder:
         """Process a single SEO domain probe."""
         domain = probe.domain
         
+        # Early exclusion check - skip previously scanned domains
+        from config import PREVIOUSLY_SCANNED_DOMAINS
+        if domain in PREVIOUSLY_SCANNED_DOMAINS:
+            print(f"Skipping {domain}: previously scanned")
+            self.stats['domains_rejected'] += 1
+            return
+        
         # Mark as processed
         self.processed_domains.add(domain)
         self.stats['domains_probed'] += 1
@@ -320,7 +327,7 @@ class LeadFinder:
                 lead_data = await self._analyze_performance(lead_data)
             
             # Calculate SEO opportunity score
-            score, tier = calculate_score(lead_data)
+            score, tier = calculate_lead_score_enhanced(lead_data)
             lead_data['score'] = score
             lead_data['tier'] = tier
             lead_data['seo_opportunity'] = score
@@ -328,8 +335,10 @@ class LeadFinder:
             # Create Lead object
             lead = Lead(**lead_data)
             
-            # Add to leads if score is high enough
-            if score >= config.SCORE_MIN:
+            # Add to leads if score is high enough OR if it's a critical performance issue
+            if score >= config.SCORE_MIN or lead_data.get('critical_performance_issue', False):
+                if lead_data.get('critical_performance_issue', False):
+                    print(f"🚨 PERFORMANCE OVERRIDE: {domain} (Score: {score}, Tier: {tier}, Rank: #{best_rank}) - Critical performance issue, always saving!")
                 self.leads.append(lead)
                 self.stats['leads_generated'] += 1
                 print(f"Added SEO lead: {domain} (Score: {score}, Tier: {tier}, Rank: #{best_rank})")
@@ -443,6 +452,13 @@ class LeadFinder:
         """Process a single domain probe."""
         domain = probe.domain
         
+        # Early exclusion check - skip previously scanned domains
+        from config import PREVIOUSLY_SCANNED_DOMAINS
+        if domain in PREVIOUSLY_SCANNED_DOMAINS:
+            print(f"Skipping {domain}: previously scanned")
+            self.stats['domains_rejected'] += 1
+            return
+        
         # Mark as processed
         self.processed_domains.add(domain)
         self.stats['domains_probed'] += 1
@@ -513,6 +529,48 @@ class LeadFinder:
             if owner_valid:
                 lead_data = await self._analyze_performance(lead_data)
             
+            # 🆕 ENHANCED: Analyze HTML for outdated site indicators
+            # This catches Divi/Elementor fingerprints, technical debt, and content freshness
+            if owner_valid and probe.pages:
+                try:
+                    from utils import analyze_html_for_outdated_sites_enhanced, check_broken_links_sample
+                    
+                    # Get the main page content for analysis
+                    main_page = None
+                    for page in probe.pages:
+                        if page.content and page.status_code < 400:
+                            main_page = page
+                            break
+                    
+                    if main_page:
+                        # Analyze HTML for outdated indicators
+                        html_analysis = analyze_html_for_outdated_sites_enhanced(
+                            main_page.content, 
+                            main_page.url
+                        )
+                        
+                        # Check broken links sample
+                        soup = BeautifulSoup(main_page.content, 'html.parser')
+                        broken_links = check_broken_links_sample(domain, soup)
+                        html_analysis['broken_links_count'] = broken_links
+                        
+                        # Merge analysis into lead data
+                        for key, value in html_analysis.items():
+                            lead_data[key] = value
+                        
+                        # Log key findings
+                        if html_analysis.get('builder'):
+                            print(f"🔧 Builder detected: {html_analysis['builder']}")
+                        if html_analysis.get('old_jquery'):
+                            print(f"⚠️  Old jQuery detected")
+                        if html_analysis.get('mixed_content'):
+                            print(f"⚠️  Mixed content detected")
+                        if broken_links >= 2:
+                            print(f"🔗 Broken links: {broken_links}")
+                            
+                except Exception as e:
+                    print(f"Warning: HTML analysis failed for {domain}: {e}")
+            
             # 🚨 CRITICAL FIX: Check for critical performance issues BEFORE spam validation
             # Sites with perf_score < 50 should ALWAYS go to human review
             critical_performance_issue = False
@@ -538,8 +596,8 @@ class LeadFinder:
                 print(f"Rejected {domain}: {reason}")
                 return
             
-            # Calculate score and tier
-            score, tier = calculate_score(lead_data)
+            # Calculate score using enhanced outdated site detection
+            score, tier = calculate_lead_score_enhanced(lead_data)
             lead_data['score'] = score
             lead_data['tier'] = tier
             
@@ -556,8 +614,10 @@ class LeadFinder:
                 spam_analysis = crawler.calculate_spam_confidence(lead_data['hacked_signals'])
                 setattr(lead, 'spam_confidence', f"{spam_analysis['avg_confidence']:.1f}%")
             
-            # Add to leads if score is high enough
-            if score >= config.SCORE_MIN:
+            # Add to leads if score is high enough OR if it's a critical performance issue
+            if score >= config.SCORE_MIN or critical_performance_issue:
+                if critical_performance_issue:
+                    print(f"🚨 PERFORMANCE OVERRIDE: {domain} (Score: {score}, Tier: {tier}) - Critical performance issue, always saving!")
                 self.leads.append(lead)
                 self.stats['leads_generated'] += 1
                 print(f"Added lead: {domain} (Score: {score}, Tier: {tier})")
@@ -576,6 +636,16 @@ class LeadFinder:
         """Validate if a lead meets basic criteria."""
         # Must have a valid domain
         if not lead_data.get('domain'):
+            return False
+        
+        # Filter out non-business domains (focus on .com, .net, .co, etc.)
+        domain = lead_data.get('domain', '').lower()
+        if any(domain.endswith(tld) for tld in ['.org', '.edu', '.gov', '.mil', '.int', '.ac']):
+            return False
+        
+        # Filter out previously scanned domains
+        from config import PREVIOUSLY_SCANNED_DOMAINS
+        if domain in PREVIOUSLY_SCANNED_DOMAINS:
             return False
         
         # Must not be a platform subdomain

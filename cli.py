@@ -245,7 +245,14 @@ def export_to_csv(leads, filename=None):
     all_fieldnames = set([
         'domain', 'brand_name', 'vertical_tag', 'score', 'tier', 'phone', 'email', 'address',
         'cms', 'wp_version', 'performance_score', 'ttfb_ms', 'lcp_ms', 'cls', 'psi_status',
-        'spam_confidence', 'performance_override', 'override_reason', 'technical_issues', 'seo_issues', 'pitch_hook'
+        'spam_confidence', 'performance_override', 'override_reason', 'technical_issues', 'seo_issues', 'pitch_hook',
+        # NEW: Enhanced outdated site detection fields
+        'psi_perf_desktop', 'builder', 'old_jquery', 'bootstrap_v3', 'http_only', 'mixed_content', 'no_hsts',
+        'missing_title', 'missing_meta_desc', 'missing_og', 'missing_schema', 'accessibility_poor',
+        'copyright_outdated', 'broken_links_count', 'nyc_bonus',
+        # NEW: JavaScript error detection fields
+        'themepunch_detected', 'fouc_issues', 'old_jquery_detected', 'console_errors', 
+        'outdated_plugins', 'js_loading_issues', 'js_score_bonus'
     ])
     
     for lead in leads:
@@ -277,7 +284,31 @@ def export_to_csv(leads, filename=None):
                     1 if lead.seo.meta_desc_missing else 0,
                     1 if lead.seo.robots_noindex else 0
                 ]),
-                'pitch_hook': generate_pitch_hook(lead)
+                'pitch_hook': generate_pitch_hook(lead),
+                # NEW: Enhanced outdated site detection fields
+                'psi_perf_desktop': getattr(lead, 'psi_perf_desktop', ''),
+                'builder': getattr(lead, 'builder', ''),
+                'old_jquery': getattr(lead, 'old_jquery', False),
+                'bootstrap_v3': getattr(lead, 'bootstrap_v3', False),
+                'http_only': getattr(lead, 'http_only', False),
+                'mixed_content': getattr(lead, 'mixed_content', False),
+                'no_hsts': getattr(lead, 'no_hsts', False),
+                'missing_title': getattr(lead, 'missing_title', False),
+                'missing_meta_desc': getattr(lead, 'missing_meta_desc', False),
+                'missing_og': getattr(lead, 'missing_og', False),
+                'missing_schema': getattr(lead, 'missing_schema', False),
+                'accessibility_poor': getattr(lead, 'accessibility_poor', False),
+                'copyright_outdated': getattr(lead, 'copyright_outdated', False),
+                'broken_links_count': getattr(lead, 'broken_links_count', 0),
+                'nyc_bonus': getattr(lead, 'nyc_bonus', 0),
+                # NEW: JavaScript error detection fields
+                'themepunch_detected': getattr(lead, 'themepunch_detected', False),
+                'fouc_issues': getattr(lead, 'fouc_issues', False),
+                'old_jquery_detected': getattr(lead, 'old_jquery_detected', False),
+                'console_errors': getattr(lead, 'console_errors', False),
+                'outdated_plugins': ','.join(getattr(lead, 'outdated_plugins', [])),
+                'js_loading_issues': getattr(lead, 'js_loading_issues', False),
+                'js_score_bonus': getattr(lead, 'js_score_bonus', 0)
             }
             
             # Flatten meta fields for CSV
@@ -313,7 +344,23 @@ def export_to_csv(leads, filename=None):
                     1 if lead.get('seo', {}).get('meta_desc_missing') else 0,
                     1 if lead.get('seo', {}).get('robots_noindex') else 0
                 ]),
-                'pitch_hook': generate_pitch_hook(lead)
+                'pitch_hook': generate_pitch_hook(lead),
+                # NEW: Enhanced outdated site detection fields
+                'psi_perf_desktop': lead.get('psi_perf_desktop', ''),
+                'builder': lead.get('builder', ''),
+                'old_jquery': lead.get('old_jquery', False),
+                'bootstrap_v3': lead.get('bootstrap_v3', False),
+                'http_only': lead.get('http_only', False),
+                'mixed_content': lead.get('mixed_content', False),
+                'no_hsts': lead.get('no_hsts', False),
+                'missing_title': lead.get('missing_title', False),
+                'missing_meta_desc': lead.get('missing_meta_desc', False),
+                'missing_og': lead.get('missing_og', False),
+                'missing_schema': lead.get('missing_schema', False),
+                'accessibility_poor': lead.get('accessibility_poor', False),
+                'copyright_outdated': lead.get('copyright_outdated', False),
+                'broken_links_count': lead.get('broken_links_count', 0),
+                'nyc_bonus': lead.get('nyc_bonus', 0)
             }
             
             # Flatten meta fields for CSV
@@ -567,4 +614,4 @@ def config():
 
 
 if __name__ == '__main__':
-    cli() 
+    cli()

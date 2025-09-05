@@ -7,6 +7,18 @@ import time
 from urllib.parse import urlparse, urljoin, urlunparse
 from typing import List, Optional, Set, Tuple
 import config
+import requests
+from bs4 import BeautifulSoup
+import warnings
+
+# Suppress BeautifulSoup warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='bs4')
+
+# Regex patterns for outdated site detection
+RE_JQ_OLD = re.compile(r"jquery-1\.\d+(\.\d+)?\.min\.js", re.I)
+RE_BOOTSTRAP3 = re.compile(r"bootstrap/3\.\d+|bootstrap\.min\.css", re.I)
+RE_COPYRIGHT = re.compile(r"(?:©|&copy;)\s*(\d{4})")
+RE_NYC_TERMS = re.compile(r"\b(?:NYC|New York|Manhattan|SoHo|Tribeca|LES|UES|West Village|Brooklyn|Williamsburg)\b", re.I)
 
 
 def extract_domain(url: str) -> str:
@@ -182,119 +194,71 @@ def is_owner_site(content: str, domain: str) -> bool:
     return signal_count > directory_count and signal_count >= 2
 
 
-def calculate_score(lead_data: dict) -> Tuple[int, str]:
-    """Calculate the lead score and tier."""
+def calculate_lead_score(lead_data: dict) -> Tuple[int, str]:
+    """
+    Calculate lead score based on outdated site indicators and technical debt.
+    
+    Args:
+        lead_data: Lead data dictionary with enhanced outdated site indicators
+        
+    Returns:
+        Tuple of (score, tier)
+    """
     score = 0
     
-    # Check if this is SEO opportunity mode
-    if lead_data.get('seo_opportunity') is not None:
-        return calculate_seo_opportunity_score(lead_data)
-    
-    # Standard scoring logic
-    
-    # Ownership & basics
-    if lead_data.get('owner_valid'):
+    # Performance scoring (desktop-first)
+    if lead_data.get('psi_perf_desktop') and lead_data['psi_perf_desktop'] <= 60:
         score += 25
-    
-    if lead_data.get('contact', {}).get('phone') or lead_data.get('contact', {}).get('form'):
-        score += 5
-    
-    # Hacked / compromised - CONFIDENCE-BASED SPAM DETECTION
-    if lead_data.get('hacked_signals'):
-        # Calculate spam confidence
-        from crawler import WebCrawler
-        crawler = WebCrawler()
-        spam_analysis = crawler.calculate_spam_confidence(lead_data['hacked_signals'])
-        
-        # Check if this is a legitimate business
-        is_legitimate_business = False
-        if lead_data.get('brand_name'):
-            brand_lower = lead_data['brand_name'].lower()
-            business_terms = ['dermatology', 'medspa', 'salon', 'dental', 'law', 'spa', 'wellness', 'fitness', 'medical']
-            if any(term in brand_lower for term in business_terms):
-                is_legitimate_business = True
-        
-        # Apply confidence-based penalties
-        avg_confidence = spam_analysis['avg_confidence']
-        
-        if avg_confidence >= 90:  # Increased from 80
-            # High confidence spam - reject regardless of business type
-            score += 50  # Heavy penalty
-            if is_legitimate_business:
-                score += 10  # Extra penalty for business sites with high-confidence spam
-        elif avg_confidence >= 40:  # Reduced from 50
-            # Medium confidence - review bucket
-            if is_legitimate_business:
-                score += 15  # Reduced penalty for legitimate businesses
-            else:
-                score += 25  # Medium penalty for non-business sites
-        elif avg_confidence >= 15:  # Reduced from 20
-            # Low confidence - likely false positive
-            if is_legitimate_business:
-                score += 5   # Very light penalty
-            else:
-                score += 10  # Light penalty
-        else:
-            # No spam detected
-            score += 0
-        
-        # Regular signals (non-spam)
-        other_signals = [s for s in lead_data['hacked_signals'] if 'Spam content' not in s]
-        if other_signals:
-            score += 20
-            if len(other_signals) >= 2:
-                score += 10
-    
-    # Outdated / tech debt
-    wp_version = lead_data.get('tech', {}).get('wp_version')
-    if wp_version:
-        try:
-            from packaging import version
-            if version.parse(wp_version) < version.parse(config.WP_VERSION_BAD):
-                score += 15
-        except:
-            # If version parsing fails, assume it's old
-            score += 15
-    
-    if lead_data.get('tech', {}).get('readme_accessible'):
+    if lead_data.get('ttfb_ms') and lead_data['ttfb_ms'] >= 1200:
+        score += 15
+    if lead_data.get('lcp_ms') and lead_data['lcp_ms'] >= 4000:
         score += 15
     
-    if lead_data.get('errors'):
-        score += 10
-    
-    # Performance
-    psi = lead_data.get('psi', {})
-    if psi and psi.get('perf') and psi['perf'] < 50:
-        score += 10
-    
-    if psi and psi.get('lcp_ms') and psi['lcp_ms'] > 10000:
+    # Security/modern web indicators
+    if lead_data.get('mixed_content') or lead_data.get('http_only'):
+        score += 15
+    if lead_data.get('no_hsts'):
         score += 5
     
-    if psi and psi.get('cls') and psi['cls'] > 0.25:
-        score += 5
+    # Builder/Stack debt (highest ROI)
+    if lead_data.get('builder') == 'Divi':
+        score += 20
+    elif lead_data.get('builder') in ['Elementor', 'WPBakery']:
+        score += 12
+    if lead_data.get('old_jquery'):
+        score += 10
+    if lead_data.get('bootstrap_v3'):
+        score += 6
     
-    # SEO
-    if (lead_data.get('seo', {}).get('robots_noindex') or 
-        lead_data.get('seo', {}).get('title_missing') or
-        lead_data.get('seo', {}).get('meta_desc_missing')):
+    # Basic SEO/Accessibility
+    if lead_data.get('missing_title'):
+        score += 8
+    if lead_data.get('missing_meta_desc'):
+        score += 6
+    if lead_data.get('missing_schema'):
+        score += 5
+    if lead_data.get('accessibility_poor'):
+        score += 8
+    
+    # Content/UX red flags
+    if lead_data.get('copyright_outdated'):
+        score += 6
+    if lead_data.get('broken_links_count', 0) >= 2:
         score += 10
     
-    # Penalty for already good performance
-    if psi and psi.get('perf') and psi['perf'] >= 80:
-        score -= 10
+    # NYC relevance bonus
+    score += lead_data.get('nyc_bonus', 0)
     
     # Cap score between 0 and 100
     score = max(0, min(100, score))
     
-    # Determine tier
-    if score >= config.TIER_A_MIN:
-        tier = "A"
-    elif score >= config.TIER_B_MIN:
-        tier = "B"
-    elif score >= config.SCORE_MIN:
-        tier = "C"
+    # Determine tier based on new scoring
+    if score >= 70:
+        tier = "A"  # Human review ASAP
+    elif score >= 50:
+        tier = "B"  # Queue for review
     else:
-        tier = "D"
+        tier = "C"  # Low priority
     
     return score, tier
 
@@ -386,3 +350,339 @@ def sanitize_filename(filename: str) -> str:
         filename = filename[:100]
     
     return filename 
+
+
+def analyze_html_for_outdated_sites(html_content: str, url: str, soup: BeautifulSoup = None) -> dict:
+    """
+    Analyze HTML content for outdated site indicators.
+    
+    Args:
+        html_content: Raw HTML content
+        url: URL being analyzed
+        soup: Pre-parsed BeautifulSoup object (optional)
+        
+    Returns:
+        Dictionary with outdated site indicators
+    """
+    if soup is None:
+        soup = BeautifulSoup(html_content, 'html.parser')
+    
+    analysis = {
+        'builder': None,
+        'old_jquery': False,
+        'bootstrap_v3': False,
+        'http_only': not url.startswith('https://'),
+        'mixed_content': False,
+        'no_hsts': True,  # Assume missing unless found
+        'missing_title': False,
+        'missing_meta_desc': False,
+        'missing_og': False,
+        'missing_schema': False,
+        'accessibility_poor': False,
+        'copyright_outdated': False,
+        'broken_links_count': 0,
+        'nyc_bonus': 0
+    }
+    
+    # Normalize HTML content safely
+    html_lower = html_content.lower()
+    
+    # 1. Builder/Stack fingerprints
+    if any(term in html_lower for term in ['wp-content/themes/divi', 'et_divi', 'divi_builder', 'et-core']):
+        analysis['builder'] = 'Divi'
+    elif any(term in html_lower for term in ['elementor-', 'elementor.min.js', 'elementor-frontend']):
+        analysis['builder'] = 'Elementor'
+    elif any(term in html_lower for term in ['js_composer', 'wpb_']):
+        analysis['builder'] = 'WPBakery'
+    elif any(term in html_lower for term in ['fusion-', 'avada-']):
+        analysis['builder'] = 'Avada'
+    elif any(term in html_lower for term in ['flatsome', 'ux-']):
+        analysis['builder'] = 'Flatsome'
+    
+    # 2. Old jQuery detection
+    if RE_JQ_OLD.search(html_content):
+        analysis['old_jquery'] = True
+    
+    # 3. Bootstrap v3 detection
+    if RE_BOOTSTRAP3.search(html_content):
+        analysis['bootstrap_v3'] = True
+    
+    # 4. Mixed content check
+    if url.startswith('https://') and 'http://' in html_content:
+        analysis['mixed_content'] = True
+    
+    # 5. HSTS check (would need response headers, but we'll check for security headers in HTML)
+    if 'strict-transport-security' in html_lower or 'hsts' in html_lower:
+        analysis['no_hsts'] = False
+    
+    # 6. SEO basics
+    title_tag = soup.find('title')
+    if not title_tag or not title_tag.get_text().strip():
+        analysis['missing_title'] = True
+    
+    meta_desc = soup.find('meta', attrs={'name': 'description'})
+    if not meta_desc or not meta_desc.get('content', '').strip():
+        analysis['missing_meta_desc'] = True
+    
+    og_tags = soup.find_all('meta', attrs={'property': re.compile(r'^og:')})
+    if not og_tags:
+        analysis['missing_og'] = True
+    
+    schema_tags = soup.find_all('script', attrs={'type': 'application/ld+json'})
+    if not schema_tags:
+        analysis['missing_schema'] = True
+    
+    # 7. Accessibility check (alt text ratio)
+    imgs = soup.find_all('img')
+    if imgs:
+        missing_alt = sum(1 for img in imgs if not img.get('alt') or img.get('alt').strip() == '')
+        alt_ratio = (missing_alt / len(imgs)) * 100
+        analysis['accessibility_poor'] = alt_ratio > 40
+    
+    # 8. Copyright year check
+    copyright_match = RE_COPYRIGHT.search(html_content)
+    if copyright_match:
+        try:
+            year = int(copyright_match.group(1))
+            analysis['copyright_outdated'] = year < 2022
+        except (ValueError, IndexError):
+            pass
+    
+    # 9. NYC relevance bonus
+    if RE_NYC_TERMS.search(html_content):
+        analysis['nyc_bonus'] = 10
+    
+    # 10. Broken links sample (we'll implement this separately for performance)
+    # For now, we'll set a placeholder and implement it in the main analysis flow
+    
+    return analysis
+
+def check_broken_links_sample(domain: str, soup: BeautifulSoup, max_links: int = 10) -> int:
+    """
+    Check a sample of internal links for broken ones.
+    
+    Args:
+        domain: Domain to check links for
+        soup: BeautifulSoup object
+        max_links: Maximum number of links to check
+        
+    Returns:
+        Number of broken links found
+    """
+    try:
+        # Find all links
+        links = soup.find_all('a', href=True)
+        
+        # Filter for same-host links
+        same_host_links = []
+        for link in links:
+            href = link.get('href', '')
+            if href.startswith('/') or href.startswith(domain) or href.startswith(f'https://{domain}'):
+                same_host_links.append(href)
+        
+        # Sample up to max_links
+        sample = same_host_links[:max_links]
+        
+        broken_count = 0
+        session = requests.Session()
+        session.headers.update({'User-Agent': 'Lead-Finder/1.0'})
+        
+        for link in sample:
+            try:
+                # Normalize URL
+                if link.startswith('/'):
+                    full_url = f"https://{domain}{link}"
+                elif link.startswith('http'):
+                    full_url = link
+                else:
+                    full_url = f"https://{domain}/{link}"
+                
+                response = session.head(full_url, allow_redirects=True, timeout=6)
+                if response.status_code >= 400:
+                    broken_count += 1
+                    
+            except Exception:
+                broken_count += 1
+                
+        return broken_count
+        
+    except Exception:
+        return 0 
+# Enhanced JavaScript and resource loading error detection
+RE_THEMEPUNCH = re.compile(r"jquery\.themepunch|revolution.*slider", re.I)
+RE_FOUC_ERRORS = re.compile(r"layout.*forced.*before.*loaded|flash.*unstyled.*content|fouc", re.I)
+RE_JQUERY_OLD = re.compile(r"jquery.*1\.\d+|jquery.*2\.\d+", re.I)
+RE_CONSOLE_ERRORS = re.compile(r"console\.(error|warn)|\.min\.js.*error", re.I)
+RE_OUTDATED_PLUGINS = re.compile(r"(revolution|slider|themepunch|visual.*composer|js.*composer)", re.I)
+
+def detect_javascript_errors(html_content: str) -> dict:
+    """
+    Detect JavaScript errors and outdated plugin indicators.
+    
+    Args:
+        html_content: Raw HTML content
+        
+    Returns:
+        Dictionary with JavaScript error indicators
+    """
+    analysis = {
+        'themepunch_detected': False,
+        'fouc_issues': False,
+        'old_jquery_detected': False,
+        'console_errors': False,
+        'outdated_plugins': [],
+        'js_loading_issues': False
+    }
+    
+    html_lower = html_content.lower()
+    
+    # 1. ThemePunch/Revolution Slider detection
+    if RE_THEMEPUNCH.search(html_content):
+        analysis['themepunch_detected'] = True
+        analysis['outdated_plugins'].append('Revolution Slider')
+    
+    # 2. FOUC (Flash of Unstyled Content) issues
+    if RE_FOUC_ERRORS.search(html_content):
+        analysis['fouc_issues'] = True
+        analysis['js_loading_issues'] = True
+    
+    # 3. Old jQuery detection (more comprehensive)
+    if RE_JQUERY_OLD.search(html_content):
+        analysis['old_jquery_detected'] = True
+    
+    # 4. Console error patterns
+    if RE_CONSOLE_ERRORS.search(html_content):
+        analysis['console_errors'] = True
+    
+    # 5. Outdated plugin detection
+    plugin_matches = RE_OUTDATED_PLUGINS.findall(html_content)
+    if plugin_matches:
+        analysis['outdated_plugins'].extend(plugin_matches)
+    
+    # 6. JavaScript loading order issues
+    if 'script' in html_lower and 'stylesheet' in html_lower:
+        # Check if scripts are loaded before stylesheets
+        script_pos = html_lower.find('<script')
+        style_pos = html_lower.find('<link')
+        if script_pos != -1 and style_pos != -1 and script_pos < style_pos:
+            analysis['js_loading_issues'] = True
+    
+    return analysis
+
+def analyze_html_for_outdated_sites_enhanced(html_content: str, url: str, soup: BeautifulSoup = None) -> dict:
+    """
+    Enhanced HTML analysis including JavaScript error detection.
+    
+    Args:
+        html_content: Raw HTML content
+        url: URL being analyzed
+        soup: Pre-parsed BeautifulSoup object (optional)
+        
+    Returns:
+        Dictionary with comprehensive outdated site indicators
+    """
+    # Get base analysis
+    analysis = analyze_html_for_outdated_sites(html_content, url, soup)
+    
+    # Add JavaScript error detection
+    js_analysis = detect_javascript_errors(html_content)
+    
+    # Merge JavaScript analysis
+    analysis.update(js_analysis)
+    
+    # Calculate additional score based on JavaScript issues
+    js_score_bonus = 0
+    if js_analysis['themepunch_detected']:
+        js_score_bonus += 15  # High value - Revolution Slider is a red flag
+    if js_analysis['fouc_issues']:
+        js_score_bonus += 10  # Performance issue
+    if js_analysis['old_jquery_detected']:
+        js_score_bonus += 8   # Security/performance issue
+    if js_analysis['console_errors']:
+        js_score_bonus += 5   # Quality issue
+    if js_analysis['js_loading_issues']:
+        js_score_bonus += 6   # Performance issue
+    
+    analysis['js_score_bonus'] = js_score_bonus
+    
+    return analysis
+
+def calculate_lead_score_enhanced(lead_data: dict) -> Tuple[int, str]:
+    """
+    Enhanced lead scoring including JavaScript error detection.
+    
+    Args:
+        lead_data: Lead data dictionary with enhanced outdated site indicators
+        
+    Returns:
+        Tuple of (score, tier)
+    """
+    score = 0
+    
+    # Performance scoring (desktop-first)
+    if lead_data.get('psi_perf_desktop') and lead_data['psi_perf_desktop'] <= 60:
+        score += 25
+    if lead_data.get('ttfb_ms') and lead_data['ttfb_ms'] >= 1200:
+        score += 15
+    if lead_data.get('lcp_ms') and lead_data['lcp_ms'] >= 4000:
+        score += 15
+    
+    # Security/modern web indicators
+    if lead_data.get('mixed_content') or lead_data.get('http_only'):
+        score += 15
+    if lead_data.get('no_hsts'):
+        score += 5
+    
+    # Builder/Stack debt (highest ROI)
+    if lead_data.get('builder') == 'Divi':
+        score += 20
+    elif lead_data.get('builder') in ['Elementor', 'WPBakery']:
+        score += 12
+    if lead_data.get('old_jquery'):
+        score += 10
+    if lead_data.get('bootstrap_v3'):
+        score += 6
+    
+    # JavaScript error detection (NEW!)
+    if lead_data.get('themepunch_detected'):
+        score += 15  # Revolution Slider is a major red flag
+    if lead_data.get('fouc_issues'):
+        score += 10  # Flash of unstyled content
+    if lead_data.get('old_jquery_detected'):
+        score += 8   # Old jQuery versions
+    if lead_data.get('console_errors'):
+        score += 5   # Console errors
+    if lead_data.get('js_loading_issues'):
+        score += 6   # JavaScript loading order issues
+    
+    # Basic SEO/Accessibility
+    if lead_data.get('missing_title'):
+        score += 8
+    if lead_data.get('missing_meta_desc'):
+        score += 6
+    if lead_data.get('missing_schema'):
+        score += 5
+    if lead_data.get('accessibility_poor'):
+        score += 8
+    
+    # Content/UX red flags
+    if lead_data.get('copyright_outdated'):
+        score += 6
+    if lead_data.get('broken_links_count', 0) >= 2:
+        score += 10
+    
+    # NYC relevance bonus
+    score += lead_data.get('nyc_bonus', 0)
+    
+    # Cap score between 0 and 100
+    score = max(0, min(100, score))
+    
+    # Determine tier based on enhanced scoring
+    if score >= 70:
+        tier = "A"  # Human review ASAP
+    elif score >= 50:
+        tier = "B"  # Queue for review
+    else:
+        tier = "C"  # Low priority
+    
+    return score, tier

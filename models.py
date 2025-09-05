@@ -98,7 +98,34 @@ class Lead(BaseModel):
     spam_confidence: Optional[str] = None
     vertical_tag: Optional[str] = None
     
-    # NEW: Catch-all meta dict for future fields (logger-friendly)
+    # NEW: Enhanced outdated site detection fields
+    psi_perf_desktop: Optional[int] = None
+    ttfb_ms: Optional[int] = None
+    lcp_ms: Optional[int] = None
+    
+    # Builder/Stack fingerprints
+    builder: Optional[str] = None  # e.g., "Divi", "Elementor", "WPBakery"
+    old_jquery: bool = False
+    bootstrap_v3: bool = False
+    
+    # Security/Modern web indicators
+    http_only: bool = False
+    mixed_content: bool = False
+    no_hsts: bool = False
+    
+    # SEO/Accessibility basics
+    missing_title: bool = False
+    missing_meta_desc: bool = False
+    missing_og: bool = False
+    missing_schema: bool = False
+    accessibility_poor: bool = False
+    
+    # Content/UX red flags
+    copyright_outdated: bool = False
+    broken_links_count: int = 0
+    nyc_bonus: int = 0
+    
+    # NEW: Catch-all for future fields (logger-friendly)
     meta: Dict[str, Any] = Field(default_factory=dict)
     
     # Metadata
@@ -147,4 +174,12 @@ class DomainProbe(BaseModel):
     total_pages: int = 0
     successful_pages: int = 0
     errors: List[str] = Field(default_factory=list)
-    probe_time_ms: float = 0.0 
+    probe_time_ms: float = 0.0     
+    # NEW: JavaScript error detection fields
+    themepunch_detected: bool = False
+    fouc_issues: bool = False
+    old_jquery_detected: bool = False
+    console_errors: bool = False
+    outdated_plugins: List[str] = Field(default_factory=list)
+    js_loading_issues: bool = False
+    js_score_bonus: int = 0
